@@ -30,3 +30,4 @@ Then open http://localhost:3000
 - `/` — Landing page
 - `/privacy` — Privacy Policy
 - `/terms-of-service` — Terms of Service
+# Intelligent-data
