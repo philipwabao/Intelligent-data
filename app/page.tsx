@@ -485,7 +485,6 @@ export default function HomePage() {
               </div>
               <aside className="hero-right">
                 <div className="auxerta-sigil auxerta-sigil-hero" aria-hidden="true">
-                    <div className="auxerta-orb orb-1" />
                     <div className="auxerta-orb orb-2" />
                     <div className="auxerta-orb orb-3" />
                 </div>
