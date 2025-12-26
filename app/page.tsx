@@ -1,8 +1,8 @@
 'use client';
 
-  import { useEffect, useState, MouseEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, MouseEvent } from 'react';
 
-  import SiteFooter from './components/SiteFooter';
+import SiteFooter from './components/SiteFooter';
 const services = [
     {
       key: 'cv',
@@ -42,6 +42,7 @@ const services = [
       tags: ['Schema design', 'Red teaming', 'Edge cases', 'Multi-modal'],
     },
   ];
+
   const examples = [
     {
       title: 'Image',
@@ -60,7 +61,308 @@ const services = [
     },
   ];
 
-  export default function HomePage() {
+  
+
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(false);
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const onChange = () => setReduced(!!mq.matches);
+    onChange();
+    mq.addEventListener?.('change', onChange);
+    return () => mq.removeEventListener?.('change', onChange);
+  }, []);
+  return reduced;
+}
+
+type Obstacle = { x: number; w: number; h: number };
+
+function RunnerGame() {
+  const reducedMotion = usePrefersReducedMotion();
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  const [score, setScore] = useState(0);
+  const [best, setBest] = useState(0);
+  const [status, setStatus] = useState<'ready' | 'running' | 'crashed'>('ready');
+  const statusRef = useRef<'ready' | 'running' | 'crashed'>(status);
+  const [runId, setRunId] = useState(0);
+  useEffect(() => { statusRef.current = status; }, [status]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const saved = Number(window.localStorage.getItem('auxerta_runner_best') ?? '0');
+    if (!Number.isNaN(saved)) setBest(saved);
+  }, []);
+
+  const label = useMemo(() => {
+    if (reducedMotion) return 'Interactive demo disabled (Reduce Motion is enabled).';
+    if (status === 'ready') return 'Click or press Space to jump.';
+    if (status === 'crashed') return 'Crash — click or press Space to retry.';
+    return 'Jump over QA blockers.';
+  }, [reducedMotion, status]);
+
+  useEffect(() => {
+    if (reducedMotion) return;
+
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Make canvas crisp on retina screens
+    const resize = () => {
+      const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+      const cssW = canvas.clientWidth;
+      const cssH = canvas.clientHeight;
+      canvas.width = Math.floor(cssW * dpr);
+      canvas.height = Math.floor(cssH * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+    resize();
+    window.addEventListener('resize', resize);
+
+    // Game state (kept outside React to avoid re-render loop)
+    let raf = 0;
+    let last = performance.now();
+    let t = 0;
+
+    const groundY = 118;
+    const player = { x: 56, y: groundY, vy: 0, r: 10 };
+    let obstacles: Obstacle[] = [];
+    let nextSpawn = 1.8;
+    let speed = 130;
+    let alive = true;
+    let localScore = 0;
+    let lastEmittedScore = -1;
+
+    const roundedRect = (x: number, y: number, w: number, h: number, r: number) => {
+      const rr = Math.min(r, w / 2, h / 2);
+      ctx.beginPath();
+      ctx.moveTo(x + rr, y);
+      ctx.arcTo(x + w, y, x + w, y + h, rr);
+      ctx.arcTo(x + w, y + h, x, y + h, rr);
+      ctx.arcTo(x, y + h, x, y, rr);
+      ctx.arcTo(x, y, x + w, y, rr);
+      ctx.closePath();
+    };
+
+    const collide = (o: Obstacle) => {
+      const px = player.x;
+      const py = player.y;
+      const r = player.r;
+      const ox = o.x;
+      const oy = groundY - o.h;
+      const nx = Math.max(ox, Math.min(px, ox + o.w));
+      const ny = Math.max(oy, Math.min(py, oy + o.h));
+      const dx = px - nx;
+      const dy = py - ny;
+      return dx * dx + dy * dy < r * r;
+    };
+
+    const draw = () => {
+      const w = canvas.clientWidth;
+      const h = canvas.clientHeight;
+
+      // Background
+      ctx.clearRect(0, 0, w, h);
+
+      const bg = ctx.createLinearGradient(0, 0, w, h);
+      bg.addColorStop(0, '#ffffff');
+      bg.addColorStop(1, '#f3f6ff');
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, w, h);
+
+      // Subtle ambient glow
+      const glow = ctx.createRadialGradient(w * 0.75, h * 0.25, 10, w * 0.75, h * 0.25, 180);
+      glow.addColorStop(0, 'rgba(168,85,247,0.18)');
+      glow.addColorStop(0.45, 'rgba(59,130,246,0.12)');
+      glow.addColorStop(1, 'rgba(34,197,94,0.00)');
+      ctx.fillStyle = glow;
+      ctx.fillRect(0, 0, w, h);
+
+      // Ground
+      ctx.strokeStyle = 'rgba(15,23,42,0.10)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(18, groundY + 0.5);
+      ctx.lineTo(w - 18, groundY + 0.5);
+      ctx.stroke();
+
+      // Obstacles
+      for (const o of obstacles) {
+        const x = o.x;
+        const y = groundY - o.h;
+        roundedRect(x, y, o.w, o.h, 10);
+
+        const fill = ctx.createLinearGradient(x, y, x + o.w, y + o.h);
+        fill.addColorStop(0, 'rgba(15,23,42,0.10)');
+        fill.addColorStop(1, 'rgba(15,23,42,0.04)');
+        ctx.fillStyle = fill;
+        ctx.fill();
+
+        const stroke = ctx.createLinearGradient(x, y, x + o.w, y + o.h);
+        stroke.addColorStop(0, 'rgba(168,85,247,0.55)');
+        stroke.addColorStop(0.4, 'rgba(59,130,246,0.55)');
+        stroke.addColorStop(0.75, 'rgba(34,193,195,0.55)');
+        stroke.addColorStop(1, 'rgba(34,197,94,0.55)');
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+
+      // Player (Auxerta orb)
+      const orb = ctx.createRadialGradient(player.x - 4, player.y - 6, 2, player.x, player.y, 16);
+      orb.addColorStop(0, 'rgba(255,255,255,0.9)');
+      orb.addColorStop(0.2, 'rgba(168,85,247,0.75)');
+      orb.addColorStop(0.55, 'rgba(59,130,246,0.55)');
+      orb.addColorStop(1, 'rgba(34,197,94,0.12)');
+      ctx.fillStyle = orb;
+      ctx.beginPath();
+      ctx.arc(player.x, player.y, player.r, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = 'rgba(15,23,42,0.12)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(player.x, player.y, player.r, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Score
+      ctx.fillStyle = 'rgba(15,23,42,0.70)';
+      ctx.font = '600 12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
+      ctx.fillText(`Score ${localScore}`, 18, 22);
+    };
+
+    const step = (now: number) => {
+      const dt = Math.min(0.033, (now - last) / 1000);
+      last = now;
+
+      const isRunning = statusRef.current === 'running';
+      if (!isRunning) {
+        draw();
+        raf = requestAnimationFrame(step);
+        return;
+      }
+
+      if (!alive) {
+        draw();
+        raf = requestAnimationFrame(step);
+        return;
+      }
+
+
+      t += dt;
+      speed = 130 + Math.min(60, t * 4);
+
+      // Spawn
+      nextSpawn -= dt;
+      if (nextSpawn <= 0) {
+        const w = 18 + Math.random() * 16;
+        const h = 22 + Math.random() * 26;
+        obstacles.push({ x: canvas.clientWidth + 24, w, h, scored: false });
+        nextSpawn = 1.6 + Math.random() * 1.1;
+      }
+
+      // Move obstacles
+      obstacles = obstacles
+        .map(o => ({ ...o, x: o.x - speed * dt }))
+        .filter(o => o.x + o.w > -20);
+
+      // Score: +1 for each obstacle successfully cleared
+      for (const o of obstacles) {
+        if (!o.scored && o.x + o.w < player.x - player.r) {
+          o.scored = true;
+          localScore += 1;
+          setScore(localScore);
+        }
+      }
+
+
+      // Player physics
+      const gravity = 1200;
+      player.vy += gravity * dt;
+      player.y += player.vy * dt;
+      if (player.y > groundY) {
+        player.y = groundY;
+        player.vy = 0;
+      }
+
+      // Collisions
+      for (const o of obstacles) {
+        if (collide(o)) {
+          alive = false;
+          setStatus('crashed');
+          setBest(prev => {
+            const next = Math.max(prev, localScore);
+            try {
+              window.localStorage.setItem('auxerta_runner_best', String(next));
+            } catch {}
+            return next;
+          });
+          break;
+        }
+      }
+
+      draw();
+      raf = requestAnimationFrame(step);
+    };
+
+    raf = requestAnimationFrame(step);
+
+    const jump = () => {
+      if (reducedMotion) return;
+      const s = statusRef.current;
+      if (s === 'ready' || s === 'crashed') {
+        // Start a fresh run
+        setScore(0);
+        setStatus('running');
+        setRunId(v => v + 1);
+        return;
+      }
+      if (player.y >= groundY - 0.5) {
+        player.vy = -520;
+      }
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        e.preventDefault();
+        jump();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    canvas.addEventListener('pointerdown', jump);
+
+    return () => {
+      window.removeEventListener('resize', resize);
+      window.removeEventListener('keydown', onKeyDown);
+      canvas.removeEventListener('pointerdown', jump);
+      cancelAnimationFrame(raf);
+    };
+  }, [reducedMotion, runId]);
+
+  return (
+    <div className="runner-card hover-lift" aria-label="Interactive QA runner demo">
+      <div className="runner-card-top">
+        <div className="runner-badge">QA runner</div>
+        <div className="runner-stats">
+          <span>Best {best}</span>
+          <span className="runner-dot" aria-hidden="true" />
+          <span>Now {score}</span>
+        </div>
+      </div>
+
+      <div className="runner-stage" role="presentation">        <canvas key={runId} ref={canvasRef} className="runner-canvas" width={640} height={140} />
+      </div>
+
+      <div className="runner-help">{label}</div>
+    </div>
+  );
+}
+export default function HomePage() {
     const [mobileOpen, setMobileOpen] = useState(false);
     const [activeServiceKey, setActiveServiceKey] = useState(services[0].key);
 
@@ -161,7 +463,7 @@ const services = [
               <div className="hero-left">
                 <h1>Data annotation for ML teams</h1>
                 <p className="hero-lead">
-                  We label your training data for computer vision, text, and LLMs. Senior annotators, clear guidelines, and fast turnaround.
+                  We train AI for enterprise clients with senior-led, human-first labeling and evaluation.
                 </p>
                 <div className="hero-actions">
                   <a
@@ -182,15 +484,13 @@ const services = [
                 </div>
               </div>
               <aside className="hero-right">
-                <div className="hero-annotation hero-annotation-flow">
-                  <div className="hero-annotation-image hero-annotation-image-flow">
-                    <div className="hero-layers">
-                      <div className="hero-layer hero-layer-1" />
-                      <div className="hero-layer hero-layer-2" />
-                      <div className="hero-layer hero-layer-3" />
-                    </div>
-                  </div>
+                <div className="auxerta-sigil auxerta-sigil-hero" aria-hidden="true">
+                    <div className="auxerta-orb orb-1" />
+                    <div className="auxerta-orb orb-2" />
+                    <div className="auxerta-orb orb-3" />
                 </div>
+
+                <RunnerGame />
               </aside>
             </div>
 
