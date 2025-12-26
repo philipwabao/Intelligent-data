@@ -76,7 +76,7 @@ function usePrefersReducedMotion(): boolean {
   return reduced;
 }
 
-type Obstacle = { x: number; w: number; h: number };
+type Obstacle = { x: number; w: number; h: number; scored: boolean };
 
 function RunnerGame() {
   const reducedMotion = usePrefersReducedMotion();
